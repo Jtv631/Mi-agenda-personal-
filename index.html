@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#F1E7D3" />
+<title>Agenda</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: #F1E7D3; overscroll-behavior: none; }
+  #root { min-height: 100vh; }
+  button { font-family: inherit; }
+  input, select { font-family: inherit; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  window.addEventListener('error', function (e) {
+    var root = document.getElementById('root');
+    if (root && !root.innerHTML) {
+      root.innerHTML = '<div style="padding:50px 24px;font-family:sans-serif;color:#2B2320;background:#F1E7D3;min-height:100vh;box-sizing:border-box;">' +
+        '<h2 style="font-size:18px;">No se pudo cargar la agenda</h2>' +
+        '<p style="font-size:14px;line-height:1.5;">Necesita conexión a internet la primera vez que la abres (para cargar algunas piezas). Comprueba tu wifi o datos móviles y vuelve a abrir el archivo.</p>' +
+        '<p style="font-size:11px;color:#8C7C66;margin-top:16px;">Detalle técnico: ' + (e.message || (e.target && e.target.src) || 'desconocido') + '</p></div>';
+    }
+  }, true);
+  setTimeout(function () {
+    var root = document.getElementById('root');
+    if (root && !root.innerHTML) {
+      root.innerHTML = '<div style="padding:50px 24px;font-family:sans-serif;color:#2B2320;background:#F1E7D3;min-height:100vh;box-sizing:border-box;">' +
+        '<h2 style="font-size:18px;">No se pudo cargar la agenda</h2>' +
+        '<p style="font-size:14px;line-height:1.5;">Necesita conexión a internet la primera vez que la abres. Comprueba tu wifi o datos móviles y vuelve a abrir el archivo.</p></div>';
+    }
+  }, 7000);
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.25.6/babel.min.js"></script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+// ---------- local storage helpers (persist in this browser only) ----------
+const storageGet = (key) => {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
+  catch (e) { return null; }
+};
+const storageSet = (key, val) => {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { console.error(e); }
+};
+const storageListKeys = (prefix) => Object.keys(localStorage).filter((k) => k.startsWith(prefix));
+
+// ---------- helpers ----------
+const pad = (n) => String(n).padStart(2, "0");
+const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const toMonthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+const isSameDay = (a, b) => toKey(a) === toKey(b);
+const addDays = (d, n) => { const c = new Date(d); c.setDate(c.getDate() + n); return c; };
+const addMonths = (d, n) => { const c = new Date(d); c.setMonth(c.getMonth() + n); return c; };
+const dayNum = (key) => Number(key.split("-")[2]);
+
+const WEEKDAYS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const WEEKDAYS_SHORT = ["L", "M", "X", "J", "V", "S", "D"];
+const MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const MONTHS_SHORT = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+const formatHeaderDate = (d) => `${WEEKDAYS[d.getDay()]}, ${d.getDate()} de ${MONTHS[d.getMonth()]}`;
+const formatMonthLabel = (d) => `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
+const timeToMinutes = (t) => { if (!t) return null; const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const uid = () => Math.random().toString(36).slice(2, 10);
+const formatMoney = (n) => `${n < 0 ? "-" : ""}${Math.abs(n).toFixed(2)} €`;
+
+const getWeekDates = (d) => {
+  const dow = d.getDay();
+  const diffToMonday = dow === 0 ? -6 : 1 - dow;
+  const monday = addDays(d, diffToMonday);
+  return Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+};
+const getMonthDates = (d) => {
+  const year = d.getFullYear(), month = d.getMonth();
+  const days = new Date(year, month + 1, 0).getDate();
+  return Array.from({ length: days }, (_, i) => new Date(year, month, i + 1));
+};
+const formatWeekRange = (dates) => {
+  const a = dates[0], b = dates[6];
+  if (a.getMonth() === b.getMonth()) return `${a.getDate()} – ${b.getDate()} de ${MONTHS[a.getMonth()]}`;
+  return `${a.getDate()} ${MONTHS_SHORT[a.getMonth()]} – ${b.getDate()} ${MONTHS_SHORT[b.getMonth()]}`;
+};
+
+// ---------- design tokens ----------
+const INK = "#2B2320", MUTED = "#8C7C66", BG = "#F1E7D3", CARD = "#F8F1E1", LINE = "#DED0AF";
+const LACQUER = "#9C3B3B", GOLD = "#AD8A55", UMBER = "#B5603A", MOSS = "#6E7B4A", BAMBOO = "#5E7A4C";
+
+const SECTIONS = [
+  { id: "personal", label: "Personal", color: LACQUER },
+  { id: "instituto", label: "Instituto", color: GOLD },
+  { id: "superior", label: "Superior", color: UMBER },
+];
+const VISTA_COLOR = "#4A3B2C";
+const SECTION_LOOKUP = Object.fromEntries(SECTIONS.map((s) => [s.id, s]));
+const SHORT_LABEL = { personal: "Pers.", instituto: "Inst.", superior: "Sup." };
+const MEAL_SLOTS = [
+  { id: "desayuno", label: "Desayuno" },
+  { id: "comida", label: "Comida" },
+  { id: "merienda", label: "Merienda" },
+  { id: "cena", label: "Cena" },
+];
+const emptySalud = () => ({
+  exercises: [],
+  meals: Object.fromEntries(MEAL_SLOTS.map((m) => [m.id, { text: "", done: false }])),
+});
+
+function MiniChart({ data }) {
+  if (!data || data.length === 0) return null;
+  const w = 320, h = 110, padX = 8, padY = 12;
+  const vals = data.map((d) => d.balance);
+  const min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  const range = max - min || 1;
+  const stepX = (w - padX * 2) / (data.length - 1 || 1);
+  const points = data.map((d, i) => {
+    const x = padX + i * stepX;
+    const y = padY + (h - padY * 2) * (1 - (d.balance - min) / range);
+    return [x, y];
+  });
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const zeroY = padY + (h - padY * 2) * (1 - (0 - min) / range);
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 110, display: "block" }}>
+      <line x1={padX} y1={zeroY} x2={w - padX} y2={zeroY} stroke={LINE} strokeWidth="1" strokeDasharray="3,3" />
+      <path d={path} fill="none" stroke={LACQUER} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      {points.length > 0 && <circle cx={points[points.length - 1][0]} cy={points[points.length - 1][1]} r="3.5" fill={LACQUER} />}
+    </svg>
+  );
+}
+
+function AgendaApp() {
+  const [activeSection, setActiveSection] = useState("personal"); // personal | instituto | superior | salud | vista
+  const [activeTab, setActiveTab] = useState("agenda");
+  const [current, setCurrent] = useState(new Date());
+  const [monthCursor, setMonthCursor] = useState(new Date());
+  const [viewMode, setViewMode] = useState("semana");
+
+  const [events, setEvents] = useState([]);
+  const [tasksMonth, setTasksMonth] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [saludData, setSaludData] = useState(emptySalud());
+  const [vistaEvents, setVistaEvents] = useState({});
+  const [vistaTasks, setVistaTasks] = useState({});
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [time, setTime] = useState("");
+  const [taskDate, setTaskDate] = useState("");
+  const [amount, setAmount] = useState("");
+  const [moveType, setMoveType] = useState("gasto");
+  const [moveDate, setMoveDate] = useState(toKey(new Date()));
+  const [editingMealSlot, setEditingMealSlot] = useState(null);
+  const [, setTick] = useState(0);
+
+  const isLifeSection = ["personal", "instituto", "superior"].includes(activeSection);
+  const sectionAccent = isLifeSection ? SECTION_LOOKUP[activeSection].color : activeSection === "salud" ? BAMBOO : VISTA_COLOR;
+
+  const dateKey = toKey(current);
+  const monthKey = toMonthKey(monthCursor);
+  const eventsStorageKey = `events:${activeSection}:${dateKey}`;
+  const tasksStorageKey = `tasks:${activeSection}:${monthKey}`;
+  const expensesStorageKey = `gastos:${monthKey}`;
+  const saludStorageKey = `salud:${dateKey}`;
+
+  useEffect(() => { const id = setInterval(() => setTick((t) => t + 1), 60000); return () => clearInterval(id); }, []);
+  useEffect(() => { if (activeSection !== "personal" && activeTab === "gastos") setActiveTab("agenda"); }, [activeSection, activeTab]);
+
+  const closeForm = () => { setFormOpen(false); setTitle(""); setTime(""); setTaskDate(""); setAmount(""); setMoveDate(toKey(current)); setEditingMealSlot(null); };
+  useEffect(() => { closeForm(); }, [activeTab, activeSection]);
+
+  useEffect(() => {
+    if (isLifeSection && activeTab === "agenda") setEvents(storageGet(eventsStorageKey) || []);
+  }, [eventsStorageKey, activeTab, isLifeSection]);
+
+  useEffect(() => {
+    if (isLifeSection && activeTab === "tareas") setTasksMonth(storageGet(tasksStorageKey) || []);
+  }, [tasksStorageKey, activeTab, isLifeSection]);
+
+  useEffect(() => {
+    if (activeSection === "personal" && activeTab === "gastos") setExpenses(storageGet(expensesStorageKey) || []);
+  }, [expensesStorageKey, activeTab, activeSection]);
+
+  useEffect(() => {
+    if (activeSection === "salud") {
+      const stored = storageGet(saludStorageKey);
+      setSaludData(stored ? { ...emptySalud(), ...stored, meals: { ...emptySalud().meals, ...(stored.meals || {}) } } : emptySalud());
+    }
+  }, [saludStorageKey, activeSection]);
+
+  useEffect(() => {
+    if (activeSection !== "vista") return;
+    const dates = viewMode === "semana" ? getWeekDates(current) : getMonthDates(monthCursor);
+    const dateKeys = dates.map(toKey);
+    const monthKeysSet = [...new Set(dates.map(toMonthKey))];
+    const eventsByDate = {}; dateKeys.forEach((k) => (eventsByDate[k] = []));
+    const tasksByDate = {}; dateKeys.forEach((k) => (tasksByDate[k] = []));
+
+    SECTIONS.forEach((sec) => {
+      if (viewMode === "semana") {
+        dateKeys.forEach((k) => {
+          const arr = storageGet(`events:${sec.id}:${k}`) || [];
+          arr.forEach((ev) => eventsByDate[k].push({ ...ev, section: sec.id, kind: "event" }));
+        });
+      } else {
+        const keys = storageListKeys(`events:${sec.id}:${monthKey}-`);
+        keys.forEach((k) => {
+          const dk = k.split(":")[2];
+          const arr = storageGet(k) || [];
+          if (eventsByDate[dk]) arr.forEach((ev) => eventsByDate[dk].push({ ...ev, section: sec.id, kind: "event" }));
+        });
+      }
+      monthKeysSet.forEach((mk) => {
+        const arr = storageGet(`tasks:${sec.id}:${mk}`) || [];
+        arr.forEach((t) => { if (t.day && tasksByDate[t.day] !== undefined) tasksByDate[t.day].push({ ...t, section: sec.id, kind: "task" }); });
+      });
+    });
+    setVistaEvents(eventsByDate);
+    setVistaTasks(tasksByDate);
+  }, [activeSection, viewMode, dateKey, monthKey, current, monthCursor]);
+
+  const persistEvents = (next) => { setEvents(next); storageSet(eventsStorageKey, next); };
+  const persistTasks = (next) => { setTasksMonth(next); storageSet(tasksStorageKey, next); };
+  const persistExpenses = (next) => { setExpenses(next); storageSet(expensesStorageKey, next); };
+  const persistSalud = (next) => { setSaludData(next); storageSet(saludStorageKey, next); };
+
+  const addEvent = () => { if (!title.trim()) return; persistEvents([...events, { id: uid(), title: title.trim(), time: time || null, done: false }]); closeForm(); };
+  const addTask = () => { if (!title.trim()) return; persistTasks([...tasksMonth, { id: uid(), title: title.trim(), day: taskDate || null, done: false }]); closeForm(); };
+  const addExpense = () => {
+    const num = parseFloat(String(amount).replace(",", "."));
+    if (!title.trim() || isNaN(num) || num <= 0) return;
+    persistExpenses([...expenses, { id: uid(), type: moveType, concept: title.trim(), amount: num, date: moveDate }]);
+    closeForm();
+  };
+  const addExercise = () => {
+    if (!title.trim()) return;
+    persistSalud({ ...saludData, exercises: [...saludData.exercises, { id: uid(), text: title.trim(), done: false }] });
+    closeForm();
+  };
+  const saveMeal = () => {
+    if (!editingMealSlot) return;
+    persistSalud({ ...saludData, meals: { ...saludData.meals, [editingMealSlot]: { ...saludData.meals[editingMealSlot], text: title.trim() } } });
+    closeForm();
+  };
+
+  const toggleEventDone = (id) => persistEvents(events.map((it) => (it.id === id ? { ...it, done: !it.done } : it)));
+  const removeEvent = (id) => persistEvents(events.filter((it) => it.id !== id));
+  const toggleTaskDone = (id) => persistTasks(tasksMonth.map((it) => (it.id === id ? { ...it, done: !it.done } : it)));
+  const removeTask = (id) => persistTasks(tasksMonth.filter((it) => it.id !== id));
+  const removeExpense = (id) => persistExpenses(expenses.filter((e) => e.id !== id));
+  const toggleExerciseDone = (id) => persistSalud({ ...saludData, exercises: saludData.exercises.map((e) => (e.id === id ? { ...e, done: !e.done } : e)) });
+  const removeExercise = (id) => persistSalud({ ...saludData, exercises: saludData.exercises.filter((e) => e.id !== id) });
+  const toggleMealDone = (slot) => persistSalud({ ...saludData, meals: { ...saludData.meals, [slot]: { ...saludData.meals[slot], done: !saludData.meals[slot].done } } });
+  const openEditMeal = (slot) => { setEditingMealSlot(slot); setTitle(saludData.meals[slot].text || ""); setFormOpen(true); };
+
+  const toggleVistaDone = (item, dk) => {
+    if (item.kind === "event") {
+      const key = `events:${item.section}:${dk}`;
+      const arr = storageGet(key) || [];
+      storageSet(key, arr.map((e) => (e.id === item.id ? { ...e, done: !e.done } : e)));
+      setVistaEvents((prev) => ({ ...prev, [dk]: (prev[dk] || []).map((e) => (e.id === item.id ? { ...e, done: !e.done } : e)) }));
+    } else {
+      const mk = dk.slice(0, 7);
+      const key = `tasks:${item.section}:${mk}`;
+      const arr = storageGet(key) || [];
+      storageSet(key, arr.map((t) => (t.id === item.id ? { ...t, done: !t.done } : t)));
+      setVistaTasks((prev) => ({ ...prev, [dk]: (prev[dk] || []).map((t) => (t.id === item.id ? { ...t, done: !t.done } : t)) }));
+    }
+  };
+
+  const timed = events.filter((it) => it.time).sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+  const untimed = events.filter((it) => !it.time);
+  const isToday = isSameDay(current, new Date());
+  const nowM = nowMinutes();
+  const railStart = 6 * 60, railEnd = 23 * 60, railSpan = railEnd - railStart;
+  const posPct = (mins) => ((Math.min(Math.max(mins, railStart), railEnd) - railStart) / railSpan) * 100;
+
+  const tasksNoDate = tasksMonth.filter((t) => !t.day);
+  const tasksDated = tasksMonth.filter((t) => t.day).sort((a, b) => (a.day < b.day ? -1 : 1));
+
+  const movesThisMonth = expenses.slice().sort((a, b) => (a.date < b.date ? 1 : -1));
+  const totalIn = expenses.filter((e) => e.type === "ingreso").reduce((s, e) => s + e.amount, 0);
+  const totalOut = expenses.filter((e) => e.type === "gasto").reduce((s, e) => s + e.amount, 0);
+  const balance = totalIn - totalOut;
+
+  const chartData = useMemo(() => {
+    const days = getMonthDates(monthCursor).length;
+    const byDay = {};
+    expenses.forEach((e) => { const d = dayNum(e.date); byDay[d] = (byDay[d] || 0) + (e.type === "ingreso" ? e.amount : -e.amount); });
+    let running = 0; const data = [];
+    for (let i = 1; i <= days; i++) { running += byDay[i] || 0; data.push({ day: i, balance: Number(running.toFixed(2)) }); }
+    return data;
+  }, [expenses, monthCursor]);
+
+  const monthStartKey = toKey(new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1));
+  const monthEndKey = toKey(new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 0));
+  const weekDates = viewMode === "semana" ? getWeekDates(current) : [];
+  const monthDates = viewMode === "mes" ? getMonthDates(monthCursor) : [];
+  const leadingBlanks = viewMode === "mes" && monthDates.length ? (monthDates[0].getDay() + 6) % 7 : 0;
+
+  const selectedKey = toKey(current);
+  const selectedEvents = (vistaEvents[selectedKey] || []).slice().sort((a, b) => {
+    if (a.time && b.time) return timeToMinutes(a.time) - timeToMinutes(b.time);
+    return a.time ? -1 : b.time ? 1 : 0;
+  });
+  const selectedTasks = vistaTasks[selectedKey] || [];
+
+  const filledMeals = MEAL_SLOTS.filter((m) => saludData.meals[m.id] && saludData.meals[m.id].text);
+  const saludDoneCount = saludData.exercises.filter((e) => e.done).length + filledMeals.filter((m) => saludData.meals[m.id].done).length;
+  const saludTotalCount = saludData.exercises.length + filledMeals.length;
+  const saludPct = saludTotalCount > 0 ? Math.round((saludDoneCount / saludTotalCount) * 100) : 0;
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.shell}>
+        <div style={styles.header}>
+          <div style={styles.headerTop}>
+            <span style={styles.eyebrow}>AGENDA</span>
+            {((isLifeSection && activeTab === "agenda") || activeSection === "salud" || (activeSection === "vista" && viewMode === "semana")) && (
+              <button onClick={() => setCurrent(new Date())} style={styles.stampBtn}>hoy</button>
+            )}
+          </div>
+
+          <div style={styles.sectionTabs}>
+            {SECTIONS.map((s) => (
+              <button key={s.id} onClick={() => setActiveSection(s.id)} style={{ ...styles.sectionTab, ...(activeSection === s.id ? { background: s.color, color: "#F8F1E1", borderColor: s.color } : {}) }}>{s.label}</button>
+            ))}
+            <button onClick={() => setActiveSection("salud")} style={{ ...styles.sectionTab, ...styles.iconTab, ...(activeSection === "salud" ? { background: BAMBOO, color: "#F8F1E1", borderColor: BAMBOO } : {}) }}>💪</button>
+            <button onClick={() => setActiveSection("vista")} style={{ ...styles.sectionTab, ...styles.iconTab, ...(activeSection === "vista" ? { background: VISTA_COLOR, color: "#F8F1E1", borderColor: VISTA_COLOR } : {}) }}>▦</button>
+          </div>
+
+          {isLifeSection && (
+            <div style={styles.subTabs}>
+              <button onClick={() => setActiveTab("agenda")} style={{ ...styles.subTab, ...(activeTab === "agenda" ? { color: INK, borderBottomColor: sectionAccent } : {}) }}>agenda</button>
+              <button onClick={() => setActiveTab("tareas")} style={{ ...styles.subTab, ...(activeTab === "tareas" ? { color: INK, borderBottomColor: sectionAccent } : {}) }}>tareas</button>
+              {activeSection === "personal" && (
+                <button onClick={() => setActiveTab("gastos")} style={{ ...styles.subTab, ...(activeTab === "gastos" ? { color: INK, borderBottomColor: sectionAccent } : {}) }}>gastos</button>
+              )}
+            </div>
+          )}
+          {activeSection === "salud" && (
+            <div style={styles.subTabs}>
+              <span style={{ ...styles.subTab, color: INK, borderBottomColor: sectionAccent, cursor: "default" }}>⚔️ entrenamiento &amp; 🍙 comidas</span>
+            </div>
+          )}
+
+          {isLifeSection && activeTab === "agenda" && (
+            <div style={styles.dateRow}>
+              <button onClick={() => setCurrent((d) => addDays(d, -1))} style={styles.navBtn}>‹</button>
+              <h1 style={styles.dateTitle}>{formatHeaderDate(current)}</h1>
+              <button onClick={() => setCurrent((d) => addDays(d, 1))} style={styles.navBtn}>›</button>
+            </div>
+          )}
+          {isLifeSection && (activeTab === "tareas" || activeTab === "gastos") && (
+            <div style={styles.dateRow}>
+              <button onClick={() => setMonthCursor((d) => addMonths(d, -1))} style={styles.navBtn}>‹</button>
+              <h1 style={{ ...styles.dateTitle, textTransform: "capitalize" }}>{formatMonthLabel(monthCursor)}</h1>
+              <button onClick={() => setMonthCursor((d) => addMonths(d, 1))} style={styles.navBtn}>›</button>
+            </div>
+          )}
+          {activeSection === "salud" && (
+            <div style={styles.dateRow}>
+              <button onClick={() => setCurrent((d) => addDays(d, -1))} style={styles.navBtn}>‹</button>
+              <h1 style={styles.dateTitle}>{formatHeaderDate(current)}</h1>
+              <button onClick={() => setCurrent((d) => addDays(d, 1))} style={styles.navBtn}>›</button>
+            </div>
+          )}
+          {activeSection === "vista" && (
+            <div style={styles.dateRow}>
+              <button onClick={() => (viewMode === "semana" ? setCurrent((d) => addDays(d, -7)) : setMonthCursor((d) => addMonths(d, -1)))} style={styles.navBtn}>‹</button>
+              <h1 style={{ ...styles.dateTitle, textTransform: "capitalize" }}>{viewMode === "semana" ? formatWeekRange(getWeekDates(current)) : formatMonthLabel(monthCursor)}</h1>
+              <button onClick={() => (viewMode === "semana" ? setCurrent((d) => addDays(d, 7)) : setMonthCursor((d) => addMonths(d, 1)))} style={styles.navBtn}>›</button>
+            </div>
+          )}
+        </div>
+
+        <div style={styles.body}>
+          {isLifeSection && activeTab === "agenda" && (
+            <div>
+              {timed.length === 0 && untimed.length === 0 ? (
+                <div style={styles.emptyMini}>sin citas para este día</div>
+              ) : (
+                <div style={styles.rail}>
+                  <div style={styles.railLine} />
+                  {isToday && nowM >= railStart && nowM <= railEnd && (
+                    <div style={{ ...styles.nowMarker, top: `${posPct(nowM)}%` }}><div style={styles.nowDot} /><div style={styles.nowLine} /></div>
+                  )}
+                  {[...timed, ...untimed].map((it) => (
+                    <div key={it.id} style={styles.railItem}>
+                      <div style={styles.railTime}>{it.time || "·"}</div>
+                      <div style={{ ...styles.railTick, borderColor: sectionAccent }} />
+                      <div style={styles.railCard}>
+                        <span style={{ ...styles.railCardText, textDecoration: it.done ? "line-through" : "none", opacity: it.done ? 0.45 : 1 }}>{it.title}</span>
+                        <div style={styles.rowActions}>
+                          <button style={styles.iconBtnGhost} onClick={() => toggleEventDone(it.id)}>✓</button>
+                          <button style={styles.iconBtnGhost} onClick={() => removeEvent(it.id)}>✕</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ height: 90 }} />
+            </div>
+          )}
+
+          {isLifeSection && activeTab === "tareas" && (
+            <div>
+              <div style={styles.sectionLabel}>sin fecha</div>
+              {tasksNoDate.length === 0 ? <div style={styles.emptyMini}>nada suelto por aquí</div> : (
+                <div style={{ ...styles.taskList, marginBottom: 26 }}>
+                  {tasksNoDate.map((it) => (
+                    <div key={it.id} style={styles.taskRow}>
+                      <button onClick={() => toggleTaskDone(it.id)} style={{ ...styles.checkbox, background: it.done ? MOSS : "transparent", borderColor: it.done ? MOSS : "#C9B98F" }}>{it.done && "✓"}</button>
+                      <span style={{ ...styles.taskText, textDecoration: it.done ? "line-through" : "none", opacity: it.done ? 0.45 : 1 }}>{it.title}</span>
+                      <button style={styles.iconBtnGhost} onClick={() => removeTask(it.id)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={styles.sectionLabel}>con fecha</div>
+              {tasksDated.length === 0 ? <div style={styles.emptyMini}>sin tareas con fecha este mes</div> : (
+                <div style={styles.taskList}>
+                  {tasksDated.map((it) => (
+                    <div key={it.id} style={styles.taskRow}>
+                      <span style={{ ...styles.dayBadge, background: `${sectionAccent}1A`, color: sectionAccent }}>{dayNum(it.day)}</span>
+                      <button onClick={() => toggleTaskDone(it.id)} style={{ ...styles.checkbox, background: it.done ? MOSS : "transparent", borderColor: it.done ? MOSS : "#C9B98F" }}>{it.done && "✓"}</button>
+                      <span style={{ ...styles.taskText, textDecoration: it.done ? "line-through" : "none", opacity: it.done ? 0.45 : 1 }}>{it.title}</span>
+                      <button style={styles.iconBtnGhost} onClick={() => removeTask(it.id)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ height: 90 }} />
+            </div>
+          )}
+
+          {activeSection === "salud" && (
+            <div>
+              {saludTotalCount > 0 && (
+                <div style={styles.progressWrap}>
+                  <div style={styles.progressTrack}><div style={{ ...styles.progressFill, width: `${saludPct}%`, background: BAMBOO }} /></div>
+                  <span style={styles.progressLabel}>{saludDoneCount}/{saludTotalCount} completado</span>
+                </div>
+              )}
+
+              <div style={styles.saludCard}>
+                <div style={styles.saludCardHeader}>
+                  <span style={styles.saludCardEmoji}>⚔️</span>
+                  <span style={styles.saludCardTitle}>Entrenamiento</span>
+                </div>
+                {saludData.exercises.length === 0 ? (
+                  <div style={styles.emptyMini}>sin ejercicios planeados para hoy</div>
+                ) : (
+                  <div style={styles.taskList}>
+                    {saludData.exercises.map((it) => (
+                      <div key={it.id} style={styles.taskRow}>
+                        <button onClick={() => toggleExerciseDone(it.id)} style={{ ...styles.checkbox, background: it.done ? BAMBOO : "transparent", borderColor: it.done ? BAMBOO : "#C9B98F" }}>{it.done && "✓"}</button>
+                        <span style={{ ...styles.taskText, textDecoration: it.done ? "line-through" : "none", opacity: it.done ? 0.45 : 1 }}>{it.text}</span>
+                        <button style={styles.iconBtnGhost} onClick={() => removeExercise(it.id)}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={styles.saludCard}>
+                <div style={styles.saludCardHeader}>
+                  <span style={styles.saludCardEmoji}>🍙</span>
+                  <span style={styles.saludCardTitle}>Comidas</span>
+                </div>
+                <div style={styles.mealList}>
+                  {MEAL_SLOTS.map((slot) => {
+                    const m = saludData.meals[slot.id] || { text: "", done: false };
+                    return (
+                      <div key={slot.id} style={styles.mealRow}>
+                        <button
+                          onClick={() => m.text && toggleMealDone(slot.id)}
+                          style={{ ...styles.checkbox, background: m.done ? BAMBOO : "transparent", borderColor: m.done ? BAMBOO : "#C9B98F", opacity: m.text ? 1 : 0.4 }}
+                        >{m.done && "✓"}</button>
+                        <button onClick={() => openEditMeal(slot.id)} style={styles.mealTextBtn}>
+                          <span style={styles.mealSlotLabel}>{slot.label}</span>
+                          <span style={{ ...styles.mealSlotText, ...(m.text ? {} : styles.mealSlotPlaceholder), textDecoration: m.done ? "line-through" : "none", opacity: m.done ? 0.45 : 1 }}>
+                            {m.text || "toca para añadir"}
+                          </span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{ height: 90 }} />
+            </div>
+          )}
+
+          {activeSection === "vista" && (
+            <div>
+              <div style={styles.typeToggle}>
+                <button onClick={() => setViewMode("semana")} style={{ ...styles.typeBtn, ...(viewMode === "semana" ? styles.typeBtnActive : {}) }}>semana</button>
+                <button onClick={() => setViewMode("mes")} style={{ ...styles.typeBtn, ...(viewMode === "mes" ? styles.typeBtnActive : {}) }}>mes</button>
+              </div>
+
+              {viewMode === "semana" ? (
+                <div style={styles.weekList}>
+                  {weekDates.map((d) => {
+                    const k = toKey(d);
+                    const evs = vistaEvents[k] || [], tks = vistaTasks[k] || [];
+                    const today = isSameDay(d, new Date()), selected = isSameDay(d, current);
+                    const secWith = [...new Set([...evs, ...tks].map((it) => it.section))];
+                    return (
+                      <button key={k} onClick={() => setCurrent(d)} style={{ ...styles.weekRow, ...(selected ? styles.weekRowSelected : {}), ...(today && !selected ? styles.weekRowToday : {}) }}>
+                        <div style={styles.weekRowDate}>
+                          <span style={styles.weekRowDow}>{WEEKDAYS[d.getDay()].slice(0, 3)}</span>
+                          <span style={styles.weekRowNum}>{d.getDate()}</span>
+                        </div>
+                        <div style={styles.weekRowInfo}>
+                          {secWith.length === 0 ? <span style={styles.weekRowEmpty}>sin actividad</span> : secWith.map((sid) => (
+                            <span key={sid} style={styles.weekBadge}><span style={{ ...styles.dot, background: SECTION_LOOKUP[sid].color }} />{SHORT_LABEL[sid]}</span>
+                          ))}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div>
+                  <div style={styles.monthHeaderRow}>{WEEKDAYS_SHORT.map((w) => <div key={w} style={styles.monthHeaderCell}>{w}</div>)}</div>
+                  <div style={styles.monthGrid}>
+                    {Array.from({ length: leadingBlanks }).map((_, i) => <div key={`b${i}`} />)}
+                    {monthDates.map((d) => {
+                      const k = toKey(d);
+                      const evs = vistaEvents[k] || [], tks = vistaTasks[k] || [];
+                      const today = isSameDay(d, new Date()), selected = isSameDay(d, current);
+                      const secWith = [...new Set([...evs, ...tks].map((it) => it.section))];
+                      return (
+                        <button key={k} onClick={() => setCurrent(d)} style={{ ...styles.monthCell, ...(selected ? styles.monthCellSelected : {}), ...(today && !selected ? styles.monthCellToday : {}) }}>
+                          <span style={styles.monthCellNum}>{d.getDate()}</span>
+                          <div style={styles.monthCellDots}>{secWith.map((sid) => <span key={sid} style={{ ...styles.dot, background: SECTION_LOOKUP[sid].color }} />)}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={styles.legendRow}>{SECTIONS.map((s) => <span key={s.id} style={styles.legendItem}><span style={{ ...styles.dot, background: s.color }} /> {s.label}</span>)}</div>
+                </div>
+              )}
+
+              <div style={styles.detailPanel}>
+                <div style={styles.sectionLabel}>{formatHeaderDate(current)}</div>
+                {selectedEvents.length === 0 && selectedTasks.length === 0 ? <div style={styles.emptyMini}>nada programado este día</div> : (
+                  <div style={styles.taskList}>
+                    {selectedEvents.map((it) => (
+                      <div key={it.id} style={styles.detailRow}>
+                        <span style={{ ...styles.dot, background: SECTION_LOOKUP[it.section].color, flexShrink: 0 }} />
+                        <span style={styles.detailTag}>{SHORT_LABEL[it.section]}</span>
+                        {it.time && <span style={styles.detailTime}>{it.time}</span>}
+                        <span style={{ ...styles.detailText, textDecoration: it.done ? "line-through" : "none", opacity: it.done ? 0.45 : 1 }}>{it.title}</span>
+                        <button style={styles.iconBtnGhost} onClick={() => toggleVistaDone(it, selectedKey)}>✓</button>
+                      </div>
+                    ))}
+                    {selectedTasks.map((it) => (
+                      <div key={it.id} style={styles.detailRow}>
+                        <span style={{ ...styles.dot, background: SECTION_LOOKUP[it.section].color, flexShrink: 0 }} />
+                        <span style={styles.detailTag}>{SHORT_LABEL[it.section]}</span>
+                        <span style={{ ...styles.detailText, textDecoration: it.done ? "line-through" : "none", opacity: it.done ? 0.45 : 1 }}>{it.title}</span>
+                        <button style={styles.iconBtnGhost} onClick={() => toggleVistaDone(it, selectedKey)}>✓</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div style={{ height: 90 }} />
+            </div>
+          )}
+
+          {activeSection === "personal" && activeTab === "gastos" && (
+            <div>
+              <div style={styles.summaryRow}>
+                <div style={styles.summaryCard}>
+                  <div style={styles.summaryLabel}>ingresos</div>
+                  <div style={{ ...styles.summaryValue, color: "#8C6A32" }}>{formatMoney(totalIn)}</div>
+                </div>
+                <div style={styles.summaryCard}>
+                  <div style={styles.summaryLabel}>gastos</div>
+                  <div style={{ ...styles.summaryValue, color: LACQUER }}>{formatMoney(totalOut)}</div>
+                </div>
+                <div style={styles.summaryCard}>
+                  <div style={styles.summaryLabel}>balance</div>
+                  <div style={{ ...styles.summaryValue, color: balance >= 0 ? INK : LACQUER }}>{formatMoney(balance)}</div>
+                </div>
+              </div>
+              <div style={styles.sectionLabel}>saldo acumulado</div>
+              <div style={styles.chartWrap}>
+                {expenses.length === 0 ? <div style={styles.emptyMini}>añade movimientos para ver la evolución</div> : <MiniChart data={chartData} />}
+              </div>
+              <div style={{ ...styles.sectionLabel, marginTop: 20 }}>movimientos</div>
+              {movesThisMonth.length === 0 ? <div style={styles.emptyMini}>sin movimientos este mes</div> : (
+                <div style={styles.moveList}>
+                  {movesThisMonth.map((m) => (
+                    <div key={m.id} style={styles.moveRow}>
+                      <div style={{ ...styles.moveDot, background: m.type === "ingreso" ? GOLD : LACQUER }} />
+                      <div style={styles.moveInfo}>
+                        <span style={styles.moveConcept}>{m.concept}</span>
+                        <span style={styles.moveDate}>{m.date.split("-").reverse().join("/")}</span>
+                      </div>
+                      <span style={{ ...styles.moveAmount, color: m.type === "ingreso" ? "#8C6A32" : LACQUER }}>{m.type === "ingreso" ? "+" : "-"}{m.amount.toFixed(2)} €</span>
+                      <button style={styles.iconBtnGhost} onClick={() => removeExpense(m.id)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ height: 90 }} />
+            </div>
+          )}
+        </div>
+
+        {formOpen ? (
+          activeTab === "gastos" && isLifeSection ? (
+            <div style={styles.formSheet}>
+              <div style={styles.typeToggle}>
+                <button onClick={() => setMoveType("gasto")} style={{ ...styles.typeBtn, ...(moveType === "gasto" ? { background: LACQUER, color: "#fff", borderColor: LACQUER } : {}) }}>gasto</button>
+                <button onClick={() => setMoveType("ingreso")} style={{ ...styles.typeBtn, ...(moveType === "ingreso" ? { background: GOLD, color: "#fff", borderColor: GOLD } : {}) }}>ingreso</button>
+              </div>
+              <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="concepto (ej. supermercado)" style={styles.textInput} />
+              <div style={styles.timeRow}>
+                <input type="number" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={{ ...styles.timeInput, width: 100 }} />
+                <span style={styles.timeHint}>€</span>
+                <input type="date" value={moveDate} onChange={(e) => setMoveDate(e.target.value)} style={{ ...styles.timeInput, marginLeft: "auto" }} />
+              </div>
+              <div style={styles.formActions}>
+                <button onClick={closeForm} style={styles.cancelBtn}>cancelar</button>
+                <button onClick={addExpense} style={{ ...styles.saveBtn, background: sectionAccent }}>guardar</button>
+              </div>
+            </div>
+          ) : activeTab === "tareas" && isLifeSection ? (
+            <div style={styles.formSheet}>
+              <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()} placeholder="¿Qué tarea quieres añadir?" style={styles.textInput} />
+              <div style={styles.timeRow}>
+                <input type="date" value={taskDate} min={monthStartKey} max={monthEndKey} onChange={(e) => setTaskDate(e.target.value)} style={styles.timeInput} />
+                <span style={styles.timeHint}>opcional</span>
+              </div>
+              <div style={styles.formActions}>
+                <button onClick={closeForm} style={styles.cancelBtn}>cancelar</button>
+                <button onClick={addTask} style={{ ...styles.saveBtn, background: sectionAccent }}>guardar</button>
+              </div>
+            </div>
+          ) : activeSection === "salud" && editingMealSlot ? (
+            <div style={styles.formSheet}>
+              <div style={styles.mealEditLabel}>{MEAL_SLOTS.find((m) => m.id === editingMealSlot)?.label}</div>
+              <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveMeal()} placeholder="¿Qué vas a comer?" style={styles.textInput} />
+              <div style={styles.formActions}>
+                <button onClick={closeForm} style={styles.cancelBtn}>cancelar</button>
+                <button onClick={saveMeal} style={{ ...styles.saveBtn, background: BAMBOO }}>guardar</button>
+              </div>
+            </div>
+          ) : activeSection === "salud" ? (
+            <div style={styles.formSheet}>
+              <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addExercise()} placeholder="¿Qué ejercicio? (ej. 20 flexiones, correr 5km)" style={styles.textInput} />
+              <div style={styles.formActions}>
+                <button onClick={closeForm} style={styles.cancelBtn}>cancelar</button>
+                <button onClick={addExercise} style={{ ...styles.saveBtn, background: BAMBOO }}>guardar</button>
+              </div>
+            </div>
+          ) : (
+            <div style={styles.formSheet}>
+              <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addEvent()} placeholder="¿Qué cita quieres añadir?" style={styles.textInput} />
+              <div style={styles.timeRow}>
+                <input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={styles.timeInput} />
+                <span style={styles.timeHint}>opcional</span>
+              </div>
+              <div style={styles.formActions}>
+                <button onClick={closeForm} style={styles.cancelBtn}>cancelar</button>
+                <button onClick={addEvent} style={{ ...styles.saveBtn, background: sectionAccent }}>guardar</button>
+              </div>
+            </div>
+          )
+        ) : (
+          (isLifeSection || activeSection === "salud") && <button onClick={() => setFormOpen(true)} style={{ ...styles.fab, background: sectionAccent }}>+</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: { minHeight: "100vh", background: `radial-gradient(circle at 18% 12%, rgba(156,59,59,0.05), transparent 42%), radial-gradient(circle at 85% 88%, rgba(173,138,85,0.07), transparent 48%), ${BG}`, display: "flex", justifyContent: "center", fontFamily: "'Inter', sans-serif", color: INK },
+  shell: { width: "100%", maxWidth: 480, minHeight: "100vh", position: "relative", display: "flex", flexDirection: "column" },
+  header: { padding: "24px 20px 14px", borderBottom: `1px solid rgba(173,138,85,0.35)`, position: "sticky", top: 0, zIndex: 5, background: BG },
+  headerTop: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, minHeight: 26 },
+  eyebrow: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.14em", color: MUTED },
+  stampBtn: { fontFamily: "'Shippori Mincho', serif", fontWeight: 600, fontSize: 12.5, color: "#F8F1E1", background: LACQUER, border: "none", borderRadius: 7, padding: "5px 13px", cursor: "pointer", transform: "rotate(-2deg)", boxShadow: "0 2px 6px rgba(60,25,25,0.3)" },
+  sectionTabs: { display: "flex", gap: 6, marginBottom: 10, overflowX: "auto" },
+  sectionTab: { flex: 1, fontFamily: "'Shippori Mincho', serif", fontSize: 13.5, fontWeight: 600, padding: "8px 4px", borderRadius: 9, border: `1px solid ${LINE}`, background: CARD, color: MUTED, cursor: "pointer", whiteSpace: "nowrap" },
+  iconTab: { flex: "0 0 42px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 },
+  subTabs: { display: "flex", gap: 14, marginBottom: 14, borderBottom: `1px solid ${LINE}`, overflowX: "auto" },
+  subTab: { fontSize: 12.5, fontWeight: 500, color: MUTED, background: "transparent", border: "none", borderBottom: "2px solid transparent", padding: "0 0 9px", cursor: "pointer", whiteSpace: "nowrap" },
+  dateRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  navBtn: { background: "transparent", border: "none", color: INK, cursor: "pointer", padding: "6px 10px", fontSize: 20, lineHeight: 1 },
+  dateTitle: { fontFamily: "'Shippori Mincho', serif", fontSize: 18, fontWeight: 600, margin: 0, textAlign: "center", textTransform: "capitalize" },
+  body: { flex: 1, overflowY: "auto", padding: "20px 20px 0" },
+  sectionLabel: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: MUTED, marginBottom: 14 },
+  emptyMini: { fontSize: 13, color: MUTED, fontStyle: "italic", paddingLeft: 2, marginBottom: 10 },
+  rail: { position: "relative", paddingLeft: 4 },
+  railLine: { position: "absolute", left: 46, top: 4, bottom: 4, width: 1, background: LINE },
+  nowMarker: { position: "absolute", left: 46, display: "flex", alignItems: "center", transform: "translateY(-50%)", zIndex: 2 },
+  nowDot: { width: 7, height: 7, borderRadius: "50%", background: GOLD, marginLeft: -3.5 },
+  nowLine: { height: 1, width: 14, background: GOLD },
+  railItem: { display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 14, position: "relative" },
+  railTime: { fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: MUTED, width: 38, paddingTop: 10, textAlign: "right", flexShrink: 0 },
+  railTick: { width: 9, height: 9, borderRadius: "50%", background: BG, border: `2px solid ${LACQUER}`, marginTop: 9, flexShrink: 0 },
+  railCard: { flex: 1, background: CARD, border: `1px solid ${LINE}`, borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  railCardText: { fontSize: 14.5, fontWeight: 500, lineHeight: 1.3 },
+  rowActions: { display: "flex", gap: 2, flexShrink: 0 },
+  iconBtnGhost: { background: "transparent", border: "none", color: MUTED, cursor: "pointer", padding: 5, borderRadius: 6, flexShrink: 0, fontSize: 13 },
+  taskList: { display: "flex", flexDirection: "column", gap: 2 },
+  taskRow: { display: "flex", alignItems: "center", gap: 11, padding: "9px 2px", borderBottom: `1px solid ${LINE}` },
+  dayBadge: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, borderRadius: 6, padding: "2px 6px", flexShrink: 0, minWidth: 22, textAlign: "center" },
+  checkbox: { width: 19, height: 19, borderRadius: 6, border: "1.5px solid #C9B98F", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, padding: 0, fontSize: 11, color: "#fff" },
+  taskText: { flex: 1, fontSize: 14.5 },
+  typeToggle: { display: "flex", gap: 6, marginBottom: 18 },
+  typeBtn: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, letterSpacing: "0.06em", padding: "6px 14px", borderRadius: 20, border: `1px solid ${LINE}`, background: "transparent", color: MUTED, cursor: "pointer" },
+  typeBtnActive: { background: VISTA_COLOR, color: "#fff", borderColor: VISTA_COLOR },
+  weekList: { display: "flex", flexDirection: "column", gap: 8 },
+  weekRow: { display: "flex", alignItems: "center", gap: 14, background: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "12px 14px", cursor: "pointer", textAlign: "left", width: "100%" },
+  weekRowToday: { borderColor: GOLD, borderWidth: 1.5 },
+  weekRowSelected: { borderColor: LACQUER, borderWidth: 1.5, background: "#F8ECE4" },
+  weekRowDate: { display: "flex", flexDirection: "column", alignItems: "center", width: 40, flexShrink: 0 },
+  weekRowDow: { fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: MUTED, textTransform: "uppercase" },
+  weekRowNum: { fontFamily: "'Shippori Mincho', serif", fontSize: 19, fontWeight: 600, color: INK },
+  weekRowInfo: { display: "flex", flexWrap: "wrap", gap: 10, flex: 1 },
+  weekRowEmpty: { fontSize: 12.5, color: MUTED, fontStyle: "italic" },
+  weekBadge: { display: "flex", alignItems: "center", gap: 5, fontSize: 12.5, color: INK },
+  dot: { width: 6, height: 6, borderRadius: "50%", display: "inline-block" },
+  monthHeaderRow: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 6 },
+  monthHeaderCell: { textAlign: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: MUTED, padding: "2px 0" },
+  monthGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 },
+  monthCell: { aspectRatio: "1", background: CARD, border: `1px solid ${LINE}`, borderRadius: 9, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, cursor: "pointer", padding: 2 },
+  monthCellToday: { borderColor: GOLD, borderWidth: 1.5 },
+  monthCellSelected: { borderColor: LACQUER, borderWidth: 1.5, background: "#F8ECE4" },
+  monthCellNum: { fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 500, color: INK },
+  monthCellDots: { display: "flex", gap: 3, height: 6 },
+  legendRow: { display: "flex", gap: 16, marginTop: 14, justifyContent: "center", flexWrap: "wrap" },
+  legendItem: { display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, color: MUTED },
+  detailPanel: { marginTop: 22, paddingTop: 18, borderTop: `1px solid ${LINE}` },
+  detailRow: { display: "flex", alignItems: "center", gap: 8, padding: "9px 2px", borderBottom: `1px solid ${LINE}` },
+  detailTag: { fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: MUTED, flexShrink: 0 },
+  detailTime: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, color: MUTED, flexShrink: 0 },
+  detailText: { flex: 1, fontSize: 14, minWidth: 0 },
+  summaryRow: { display: "flex", gap: 8, marginBottom: 22 },
+  summaryCard: { flex: 1, background: CARD, border: `1px solid ${LINE}`, borderRadius: 10, padding: "11px 10px" },
+  summaryLabel: { fontSize: 10.5, color: MUTED, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 },
+  summaryValue: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 500 },
+  chartWrap: { background: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "10px 8px" },
+  moveList: { display: "flex", flexDirection: "column", gap: 2 },
+  moveRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 2px", borderBottom: `1px solid ${LINE}` },
+  moveDot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
+  moveInfo: { flex: 1, display: "flex", flexDirection: "column", gap: 1, minWidth: 0 },
+  moveConcept: { fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  moveDate: { fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: MUTED },
+  moveAmount: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13.5, fontWeight: 600, flexShrink: 0 },
+  fab: { position: "fixed", bottom: 22, right: "calc(50% - 240px + 20px)", width: 52, height: 52, borderRadius: "50%", color: "#fff", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 6px 18px rgba(60,30,20,0.3)", fontSize: 26 },
+  formSheet: { position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: 0, width: "100%", maxWidth: 480, background: CARD, borderTop: `1px solid ${LINE}`, borderRadius: "18px 18px 0 0", padding: "16px 18px 20px", boxShadow: "0 -8px 24px rgba(43,35,32,0.12)", zIndex: 10 },
+  textInput: { width: "100%", fontSize: 16, padding: "10px 4px", border: "none", borderBottom: `1.5px solid ${LINE}`, outline: "none", marginBottom: 12, background: "transparent", color: INK },
+  timeRow: { display: "flex", alignItems: "center", gap: 8, marginBottom: 16 },
+  timeInput: { border: `1px solid ${LINE}`, borderRadius: 8, padding: "6px 10px", fontSize: 14, fontFamily: "'JetBrains Mono', monospace", color: INK, background: "transparent" },
+  timeHint: { fontSize: 11, color: MUTED, fontStyle: "italic" },
+  formActions: { display: "flex", justifyContent: "flex-end", gap: 10 },
+  cancelBtn: { fontSize: 13, color: MUTED, background: "transparent", border: "none", padding: "9px 14px", cursor: "pointer" },
+  saveBtn: { fontSize: 13, fontWeight: 600, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer" },
+  progressWrap: { display: "flex", alignItems: "center", gap: 10, marginBottom: 20 },
+  progressTrack: { flex: 1, height: 6, borderRadius: 4, background: LINE, overflow: "hidden" },
+  progressFill: { height: "100%", borderRadius: 4, transition: "width 0.3s" },
+  progressLabel: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: MUTED, flexShrink: 0 },
+  saludCard: { background: CARD, border: `1px solid ${LINE}`, borderRadius: 14, padding: "16px 16px 8px", marginBottom: 18 },
+  saludCardHeader: { display: "flex", alignItems: "center", gap: 8, marginBottom: 14 },
+  saludCardEmoji: { fontSize: 17 },
+  saludCardTitle: { fontFamily: "'Shippori Mincho', serif", fontSize: 15.5, fontWeight: 600, color: INK },
+  mealList: { display: "flex", flexDirection: "column", gap: 2 },
+  mealRow: { display: "flex", alignItems: "center", gap: 11, padding: "9px 2px", borderBottom: `1px solid ${LINE}` },
+  mealTextBtn: { flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1, background: "transparent", border: "none", padding: 0, cursor: "pointer", textAlign: "left", minWidth: 0 },
+  mealSlotLabel: { fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: MUTED },
+  mealSlotText: { fontSize: 14, color: INK },
+  mealSlotPlaceholder: { color: MUTED, fontStyle: "italic" },
+  mealEditLabel: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: MUTED, marginBottom: 10 },
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<AgendaApp />);
+</script>
+</body>
+</html>
