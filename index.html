@@ -45,6 +45,22 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.25.6/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyDqySEE8r4OZPTr8UMKXYJCuGCaMKgQ8cA",
+    authDomain: "mi-agenda-bef21.firebaseapp.com",
+    projectId: "mi-agenda-bef21",
+    storageBucket: "mi-agenda-bef21.firebasestorage.app",
+    messagingSenderId: "298009532851",
+    appId: "1:298009532851:web:86fd70d2a094416b0b53c6",
+  };
+  try {
+    firebase.initializeApp(firebaseConfig);
+    window.__db = firebase.firestore();
+  } catch (e) { console.error("Firebase init failed", e); window.__db = null; }
+</script>
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useCallback, useMemo } = React;
 
@@ -57,6 +73,34 @@ const storageSet = (key, val) => {
   try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { console.error(e); }
 };
 const storageListKeys = (prefix) => Object.keys(localStorage).filter((k) => k.startsWith(prefix));
+
+// ---------- cloud backup (Firestore) ----------
+const SYNC_KEY = "agenda-sync-code";
+const getSyncCode = () => {
+  let c = localStorage.getItem(SYNC_KEY);
+  if (!c) {
+    c = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 8);
+    localStorage.setItem(SYNC_KEY, c);
+  }
+  return c;
+};
+const backupToCloud = (key, val) => {
+  if (!window.__db) return;
+  window.__db.collection("agendas").doc(getSyncCode()).set({ [key]: val }, { merge: true }).catch((e) => console.error("backup failed", e));
+};
+const restoreFromCloud = async (code) => {
+  if (!window.__db) return { ok: false, reason: "sin conexión con la nube" };
+  try {
+    const snap = await window.__db.collection("agendas").doc(code).get();
+    if (!snap.exists) return { ok: false, reason: "no se encontró ese código" };
+    const data = snap.data();
+    Object.entries(data).forEach(([k, v]) => localStorage.setItem(k, JSON.stringify(v)));
+    localStorage.setItem(SYNC_KEY, code);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: "error de conexión" };
+  }
+};
 
 // ---------- helpers ----------
 const pad = (n) => String(n).padStart(2, "0");
@@ -165,6 +209,11 @@ function AgendaApp() {
   const [moveDate, setMoveDate] = useState(toKey(new Date()));
   const [editingMealSlot, setEditingMealSlot] = useState(null);
   const [, setTick] = useState(0);
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [restoreCode, setRestoreCode] = useState("");
+  const [restoreStatus, setRestoreStatus] = useState(null);
+  const [copyStatus, setCopyStatus] = useState("");
+  const [isFirstRun] = useState(() => !localStorage.getItem(SYNC_KEY));
 
   const isLifeSection = ["personal", "instituto", "superior"].includes(activeSection);
   const sectionAccent = isLifeSection ? SECTION_LOOKUP[activeSection].color : activeSection === "salud" ? BAMBOO : VISTA_COLOR;
@@ -177,6 +226,21 @@ function AgendaApp() {
   const saludStorageKey = `salud:${dateKey}`;
 
   useEffect(() => { const id = setInterval(() => setTick((t) => t + 1), 60000); return () => clearInterval(id); }, []);
+  useEffect(() => { getSyncCode(); if (isFirstRun) setBackupOpen(true); }, []);
+
+  const doCopyCode = () => {
+    const code = getSyncCode();
+    if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => setCopyStatus("¡Copiado!")).catch(() => setCopyStatus(code));
+    else setCopyStatus(code);
+    setTimeout(() => setCopyStatus(""), 2500);
+  };
+  const doRestore = async () => {
+    if (!restoreCode.trim()) return;
+    setRestoreStatus("cargando");
+    const res = await restoreFromCloud(restoreCode.trim());
+    if (res.ok) { setRestoreStatus("ok"); setTimeout(() => window.location.reload(), 1200); }
+    else setRestoreStatus(res.reason);
+  };
   useEffect(() => { if (activeSection !== "personal" && activeTab === "gastos") setActiveTab("agenda"); }, [activeSection, activeTab]);
 
   const closeForm = () => { setFormOpen(false); setTitle(""); setTime(""); setTaskDate(""); setAmount(""); setMoveDate(toKey(current)); setEditingMealSlot(null); };
@@ -232,10 +296,10 @@ function AgendaApp() {
     setVistaTasks(tasksByDate);
   }, [activeSection, viewMode, dateKey, monthKey, current, monthCursor]);
 
-  const persistEvents = (next) => { setEvents(next); storageSet(eventsStorageKey, next); };
-  const persistTasks = (next) => { setTasksMonth(next); storageSet(tasksStorageKey, next); };
-  const persistExpenses = (next) => { setExpenses(next); storageSet(expensesStorageKey, next); };
-  const persistSalud = (next) => { setSaludData(next); storageSet(saludStorageKey, next); };
+  const persistEvents = (next) => { setEvents(next); storageSet(eventsStorageKey, next); backupToCloud(eventsStorageKey, next); };
+  const persistTasks = (next) => { setTasksMonth(next); storageSet(tasksStorageKey, next); backupToCloud(tasksStorageKey, next); };
+  const persistExpenses = (next) => { setExpenses(next); storageSet(expensesStorageKey, next); backupToCloud(expensesStorageKey, next); };
+  const persistSalud = (next) => { setSaludData(next); storageSet(saludStorageKey, next); backupToCloud(saludStorageKey, next); };
 
   const addEvent = () => { if (!title.trim()) return; persistEvents([...events, { id: uid(), title: title.trim(), time: time || null, done: false }]); closeForm(); };
   const addTask = () => { if (!title.trim()) return; persistTasks([...tasksMonth, { id: uid(), title: title.trim(), day: taskDate || null, done: false }]); closeForm(); };
@@ -270,13 +334,15 @@ function AgendaApp() {
     if (item.kind === "event") {
       const key = `events:${item.section}:${dk}`;
       const arr = storageGet(key) || [];
-      storageSet(key, arr.map((e) => (e.id === item.id ? { ...e, done: !e.done } : e)));
+      const next = arr.map((e) => (e.id === item.id ? { ...e, done: !e.done } : e));
+      storageSet(key, next); backupToCloud(key, next);
       setVistaEvents((prev) => ({ ...prev, [dk]: (prev[dk] || []).map((e) => (e.id === item.id ? { ...e, done: !e.done } : e)) }));
     } else {
       const mk = dk.slice(0, 7);
       const key = `tasks:${item.section}:${mk}`;
       const arr = storageGet(key) || [];
-      storageSet(key, arr.map((t) => (t.id === item.id ? { ...t, done: !t.done } : t)));
+      const next = arr.map((t) => (t.id === item.id ? { ...t, done: !t.done } : t));
+      storageSet(key, next); backupToCloud(key, next);
       setVistaTasks((prev) => ({ ...prev, [dk]: (prev[dk] || []).map((t) => (t.id === item.id ? { ...t, done: !t.done } : t)) }));
     }
   };
@@ -328,7 +394,7 @@ function AgendaApp() {
       <div style={styles.shell}>
         <div style={styles.header}>
           <div style={styles.headerTop}>
-            <span style={styles.eyebrow}>AGENDA</span>
+            <button onClick={() => setBackupOpen(true)} style={styles.eyebrowBtn}>AGENDA ⋯</button>
             {((isLifeSection && activeTab === "agenda") || activeSection === "salud" || (activeSection === "vista" && viewMode === "semana")) && (
               <button onClick={() => setCurrent(new Date())} style={styles.stampBtn}>hoy</button>
             )}
@@ -689,6 +755,32 @@ function AgendaApp() {
         ) : (
           (isLifeSection || activeSection === "salud") && <button onClick={() => setFormOpen(true)} style={{ ...styles.fab, background: sectionAccent }}>+</button>
         )}
+
+        {backupOpen && (
+          <div style={styles.backupOverlay} onClick={() => setBackupOpen(false)}>
+            <div style={styles.backupSheet} onClick={(e) => e.stopPropagation()}>
+              <div style={styles.sectionLabel}>copia de seguridad en la nube</div>
+              <p style={styles.backupText}>Este código guarda tus datos automáticamente. Apúntalo en algún sitio seguro — lo necesitarás para recuperarlos en otro dispositivo o si reinstalas la app.</p>
+              <div style={styles.codeBox}>
+                <span style={styles.codeText}>{getSyncCode()}</span>
+                <button onClick={doCopyCode} style={styles.codeCopyBtn}>{copyStatus || "copiar"}</button>
+              </div>
+
+              <div style={{ height: 22 }} />
+              <div style={styles.sectionLabel}>restaurar desde otro código</div>
+              <p style={styles.backupText}>Si vienes de otro dispositivo o reinstalaste la app, introduce aquí tu código para recuperar tus datos (sustituirá lo que haya ahora mismo en este dispositivo).</p>
+              <div style={styles.timeRow}>
+                <input value={restoreCode} onChange={(e) => setRestoreCode(e.target.value)} placeholder="tu código" style={{ ...styles.textInput, marginBottom: 0 }} />
+                <button onClick={doRestore} style={{ ...styles.saveBtn, background: LACQUER, flexShrink: 0 }}>restaurar</button>
+              </div>
+              {restoreStatus === "cargando" && <p style={styles.backupStatus}>restaurando…</p>}
+              {restoreStatus === "ok" && <p style={{ ...styles.backupStatus, color: "#5C7A55" }}>¡listo! recargando…</p>}
+              {restoreStatus && restoreStatus !== "cargando" && restoreStatus !== "ok" && <p style={{ ...styles.backupStatus, color: LACQUER }}>{restoreStatus}</p>}
+
+              <button onClick={() => setBackupOpen(false)} style={styles.backupCloseBtn}>cerrar</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -700,6 +792,7 @@ const styles = {
   header: { padding: "24px 20px 14px", borderBottom: `1px solid rgba(173,138,85,0.35)`, position: "sticky", top: 0, zIndex: 5, background: BG },
   headerTop: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, minHeight: 26 },
   eyebrow: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.14em", color: MUTED },
+  eyebrowBtn: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.14em", color: MUTED, background: "transparent", border: "none", padding: 0, cursor: "pointer" },
   stampBtn: { fontFamily: "'Shippori Mincho', serif", fontWeight: 600, fontSize: 12.5, color: "#F8F1E1", background: LACQUER, border: "none", borderRadius: 7, padding: "5px 13px", cursor: "pointer", transform: "rotate(-2deg)", boxShadow: "0 2px 6px rgba(60,25,25,0.3)" },
   sectionTabs: { display: "flex", gap: 6, marginBottom: 10, overflowX: "auto" },
   sectionTab: { flex: 1, fontFamily: "'Shippori Mincho', serif", fontSize: 13.5, fontWeight: 600, padding: "8px 4px", borderRadius: 9, border: `1px solid ${LINE}`, background: CARD, color: MUTED, cursor: "pointer", whiteSpace: "nowrap" },
@@ -794,6 +887,14 @@ const styles = {
   mealSlotText: { fontSize: 14, color: INK },
   mealSlotPlaceholder: { color: MUTED, fontStyle: "italic" },
   mealEditLabel: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: MUTED, marginBottom: 10 },
+  backupOverlay: { position: "fixed", inset: 0, background: "rgba(43,35,32,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 20 },
+  backupSheet: { width: "100%", maxWidth: 480, background: CARD, borderRadius: "18px 18px 0 0", padding: "22px 20px 26px", boxShadow: "0 -8px 24px rgba(43,35,32,0.2)" },
+  backupText: { fontSize: 12.5, color: MUTED, lineHeight: 1.5, marginTop: -6, marginBottom: 14 },
+  codeBox: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: BG, border: `1px solid ${LINE}`, borderRadius: 10, padding: "10px 14px" },
+  codeText: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, letterSpacing: "0.05em", color: INK, wordBreak: "break-all" },
+  codeCopyBtn: { fontSize: 12, fontWeight: 600, color: "#fff", background: GOLD, border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", flexShrink: 0 },
+  backupStatus: { fontSize: 12.5, marginTop: 8 },
+  backupCloseBtn: { width: "100%", marginTop: 20, fontSize: 13, color: MUTED, background: "transparent", border: `1px solid ${LINE}`, borderRadius: 8, padding: "9px 0", cursor: "pointer" },
 };
 
 ReactDOM.createRoot(document.getElementById("root")).render(<AgendaApp />);
